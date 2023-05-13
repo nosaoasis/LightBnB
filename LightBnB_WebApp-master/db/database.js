@@ -1,9 +1,9 @@
-require("dotenv").config()
-const { Pool } = require('pg');
+require("dotenv").config();
+const { Pool } = require("pg");
 const properties = require("./json/properties.json");
 const users = require("./json/users.json");
 
-const {DB_USER, DB_PASSWORD, DB_HOST, DB_DATABASE} = process.env
+const { DB_USER, DB_PASSWORD, DB_HOST, DB_DATABASE } = process.env;
 
 /// Users
 
@@ -11,7 +11,7 @@ const pool = new Pool({
   user: DB_USER,
   password: `${DB_PASSWORD}`,
   host: DB_HOST,
-  database: DB_DATABASE
+  database: DB_DATABASE,
 });
 
 /**
@@ -20,7 +20,6 @@ const pool = new Pool({
  * @return {Promise<{}>} A promise to the user.
  */
 const getUserWithEmail = function (email) {
-
   return pool
     .query(
       `
@@ -30,8 +29,8 @@ const getUserWithEmail = function (email) {
         `,
       [email.toLowerCase()]
     )
-    .then(res => res.rows[0])
-    .catch((err) => console.log(err.message))
+    .then((res) => res.rows[0])
+    .catch((err) => console.log(err.message));
 };
 
 /**
@@ -49,8 +48,8 @@ const getUserWithId = function (id) {
         `,
       [id]
     )
-    .then(res => res.rows[0])
-    .catch((err) => console.log(err.message))
+    .then((res) => res.rows[0])
+    .catch((err) => console.log(err.message));
 };
 
 /**
@@ -59,17 +58,16 @@ const getUserWithId = function (id) {
  * @return {Promise<{}>} A promise to the user.
  */
 const addUser = function (user) {
-    return pool
-      .query(
-        `
+  return pool
+    .query(
+      `
         INSERT INTO users (name, email, password)
         VALUES ($1, $2, $3)
-        RETURNING *`, 
-        [user.name, user.email, user.password]
-      )
-      .then(res => res.rows[0])
-      .catch((err) => console.log(err.message)
-    );
+        RETURNING *`,
+      [user.name, user.email, user.password]
+    )
+    .then((res) => res.rows[0])
+    .catch((err) => console.log(err.message));
 };
 
 /// Reservations
@@ -80,21 +78,27 @@ const addUser = function (user) {
  * @return {Promise<[{}]>} A promise to the reservations.
  */
 const getAllReservations = function (guest_id, limit = 10) {
-    return pool
-      .query(
-        `
-          SELECT *
-          FROM reservations
-          WHERE guest_id = $1
-          LIMIT $2
+  return pool
+    .query(
+      `
+        SELECT properties.*, reservations.*, avg(rating) as average_rating
+        FROM reservations
+        JOIN properties ON reservations.property_id = properties.id
+        JOIN property_reviews ON properties.id = property_reviews.property_id 
+        WHERE reservations.guest_id = $1
+        AND reservations.end_date < now()::date
+        GROUP BY properties.id, reservations.id
+        ORDER BY reservations.start_date
+        LIMIT $2;
         `,
-        [guest_id, limit]
-      )
-      .then((result) => result.rows[0])
-      .catch((err) => {
-        console.log(err.message);
+      [guest_id, limit]
+    )
+    .then((result) => {
+      return result.rows;
+    })
+    .catch((err) => {
+      console.log(err.message);
     });
-  // return getAllProperties(null, 2);
 };
 
 /// Properties
@@ -106,15 +110,46 @@ const getAllReservations = function (guest_id, limit = 10) {
  * @return {Promise<[{}]>}  A promise to the properties.
  */
 const getAllProperties = function (options, limit = 10) {
-  return pool
-    .query(`SELECT * FROM properties LIMIT $1`, [limit])
-    .then((result) => {
-      console.log(result.rows);
-      return result.rows
-    })
-    .catch((err) => {
-      console.log(err.message);
-    });
+  const queryParams = [];
+  let queryString = `
+  SELECT properties.*, avg(property_reviews.rating) as average_rating
+  FROM properties
+  JOIN property_reviews ON properties.id = property_id
+  WHERE 1=1
+  `;
+
+  if (options.city) {
+    queryParams.push(`%${options.city}%`);
+    queryString += `AND city LIKE $${queryParams.length}`;
+  }
+
+  if (options.owner_id) {
+    queryParams.push(`${options.owner_id}`);
+    queryString += `AND owner_id = $${queryParams.length}\n`;
+  }
+
+  if (options.minimum_price_per_night && options.maximum_price_per_night) {
+    queryParams.push(options.minimum_price_per_night * 100);
+    queryParams.push(options.maximum_price_per_night * 100);
+    queryString += `AND (cost_per_night >= $${
+      queryParams.length - 1
+    } AND cost_per_night <= $${queryParams.length})\n`;
+  }
+
+  queryString += `GROUP BY properties.id\n`;
+
+  if (options.minimum_rating) {
+    queryParams.push(options.minimum_rating);
+    queryString += `HAVING avg(rating) >= $${queryParams.length}\n`;
+  }
+
+  queryParams.push(limit);
+  queryString += `
+  ORDER BY cost_per_night
+  LIMIT $${queryParams.length};
+  `;
+
+  return pool.query(queryString, queryParams).then((res) => res.rows);
 };
 
 /**
